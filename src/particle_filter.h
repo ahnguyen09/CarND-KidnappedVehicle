@@ -43,6 +43,9 @@ class ParticleFilter {
 	// will also define in init step -- 2*sigx^2, 2*sigy^2
 	double sig_xx;
 	double sig_yy;
+
+	// filter window based on std of pos and landmark and sensor range
+	float filter_window[2];
 	
 public:
 	
@@ -65,7 +68,7 @@ public:
 	 * @param std[] Array of dimension 3 [standard deviation of x [m], standard deviation of y [m]
 	 *   standard deviation of yaw [rad]]
 	 */
-	void init(double x, double y, double theta, double std[]);
+	void init(double x, double y, double theta, double std[], double std_landmark[], double sensor_range);
 
 	/**
 	 * prediction Predicts the state for the next time step

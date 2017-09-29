@@ -14,28 +14,32 @@
 #include <sstream>
 #include <string>
 #include <iterator>
+#include <time.h>
 
 #include "particle_filter.h"
 #include "map.h"
 
 using namespace std;
 
-void ParticleFilter::init(double x, double y, double theta, double std[]) {
+void ParticleFilter::init(double x, double y, double theta, double std[], double std_landmark[], double sensor_range) {
 	// TODO: Set the number of particles. Initialize all particles to first position (based on estimates of 
 	//   x, y, theta and their uncertainties from GPS) and all weights to 1. 
 	// Add random Gaussian noise to each particle.
 	// NOTE: Consult particle_filter.h for more information about this method (and others in this file).
 	
 	//set number of particles
-	num_particles = 20;
+	num_particles = 12;
 
 	//initialize weights to the same size as number of particles
 	weights.resize(num_particles,1.0);
 
+	filter_window[0] = sensor_range + 4*std[0] + 4*std_landmark[0];
+	filter_window[1] = sensor_range + 4*std[1] + 4*std_landmark[1];
+
 	//calculate multivariable probability variables
-	gauss_norm = (1/(2*M_PI*std[0]*std[1]));
-	sig_xx = 2*std[0]*std[0];
-	sig_yy = 2*std[1]*std[1];
+	gauss_norm = (1/(2*M_PI*std_landmark[0]*std_landmark[1]));
+	sig_xx = 2*std_landmark[0]*std_landmark[0];
+	sig_yy = 2*std_landmark[1]*std_landmark[1];
 
 	//create engine to generate random value
 	default_random_engine gen;
@@ -170,13 +174,14 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[], d
 	// observation position (particle pos + obs distance transformed) -> x,y
 	// transformed obs id hold closes landmark id
 	
-	float dx_filter = sensor_range + 4*std_pos[0];
-	float dy_filter = sensor_range + 4*std_pos[1];
+	/* Taken care of in init 
+	float dx_filter = sensor_range + 4*std_pos[0] + 4*std_landmark[0];
+	float dy_filter = sensor_range + 4*std_pos[1] + 4*std_landmark[1];
+	float filter_window[2] = {dx_filter,dy_filter}; */ 
 	Map filtered_map;
 
 	// we should only care about landmark within sensor range (plus noise) of gps particle cluster
 	// e.g. don't care about landmarks in China while driving in CA
-	float filter_window[] = {dx_filter,dy_filter};
 	FilterLandmarks(particles,filter_window,map_landmarks,filtered_map);
 
 	// for each particle
@@ -195,28 +200,30 @@ void ParticleFilter::updateWeights(double sensor_range, double std_landmark[], d
 			tempObs.y = particles[i].y + sin(theta)*x_obs + cos(theta)*y_obs;
 			transformed_observations.push_back(tempObs); 
 		}
-		dataAssociation(filtered_map,transformed_observations);
-
+	
 		particles[i].weight = 1.0; //reset weight before applying products
-		for (auto &trans_obs : transformed_observations) {
-			// landmark position -> mu_x,mu_y
-			// observation position (particle pos + obs distance transformed) -> x,y
-			// landmark maping: id_i - 1 is index in list
-			double mu_x = map_landmarks.landmark_list[int(trans_obs.id - 1)].x_f;
-			double mu_y = map_landmarks.landmark_list[int(trans_obs.id - 1)].y_f;
-			double x_obs = trans_obs.x;
-			double y_obs = trans_obs.y;
+		//if landmark exist in filtered window then update weights otherwise all weights will be the same
+		if (filtered_map.landmark_list.size() > 0) {
+			dataAssociation(filtered_map,transformed_observations);
+			for (auto &trans_obs : transformed_observations) {
+				// landmark position -> mu_x,mu_y
+				// observation position (particle pos + obs distance transformed) -> x,y
+				// landmark maping: id_i - 1 is index in list
+				double mu_x = map_landmarks.landmark_list[int(trans_obs.id - 1)].x_f;
+				double mu_y = map_landmarks.landmark_list[int(trans_obs.id - 1)].y_f;
+				double x_obs = trans_obs.x;
+				double y_obs = trans_obs.y;
 
-			/* defined in init step
-			gauss_norm = (1/(2*M_PI*std[0]*std[1]));
-			sig_xx = 2*std[0]*std[0];
-			sig_yy = 2*std[1]*std[1]; */
+				/* defined in init step
+				gauss_norm = (1/(2*M_PI*std[0]*std[1]));
+				sig_xx = 2*std[0]*std[0];
+				sig_yy = 2*std[1]*std[1]; */
 
-			double exponent = pow((x_obs - mu_x),2)/sig_xx + pow((y_obs - mu_y),2)/sig_yy;
+				double exponent = pow((x_obs - mu_x),2)/sig_xx + pow((y_obs - mu_y),2)/sig_yy;
 
-			particles[i].weight *= gauss_norm * exp(-exponent);
+				particles[i].weight *= gauss_norm * exp(-exponent);
+			}
 		}
-
 		weights[i] = particles[i].weight;
 	}
 }
@@ -225,6 +232,10 @@ void ParticleFilter::resample() {
 	// TODO: Resample particles with replacement with probability proportional to their weight. 
 	// NOTE: You may find std::discrete_distribution helpful here.
 	//   http://en.cppreference.com/w/cpp/numeric/random/discrete_distribution
+
+
+	// 5 particles; time 48.96 s
+	/*
 	vector<Particle> new_particles;
 	random_device rd;
 	mt19937 gen(rd());
@@ -236,6 +247,32 @@ void ParticleFilter::resample() {
 		new_particles.push_back(particles[idx]);
 	}
 	particles = new_particles;
+	*/
+	
+	// 5 particles; time 48.96 s
+	//resample wheel
+	vector<Particle> new_particles;
+	vector<double> norm_weights;
+	double sum_weights = 0.0;
+	// calculate sum weights
+	for (auto &w : weights) {sum_weights += w;}
+	// normalize weights
+	for (auto &w : weights) {norm_weights.push_back(w/sum_weights);}
+
+	srand(time(NULL));
+	int index = ((double) rand() / (RAND_MAX))*num_particles;
+	double beta = 0.0;
+	double max_weight = *max_element(norm_weights.begin(), norm_weights.end());
+	for (int i=0;i<num_particles;i++) {
+		beta += ((double) rand() / (RAND_MAX)) * 2.0 * max_weight;
+		while (beta > norm_weights[index]) {
+			beta -= norm_weights[index];
+			index = (index + 1) % num_particles;
+		}
+		new_particles.push_back(particles[index]); 
+	}
+	particles = new_particles;
+
 }
 
 Particle ParticleFilter::SetAssociations(Particle particle, vector<int> associations, vector<double> sense_x, vector<double> sense_y)
